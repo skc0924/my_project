@@ -1,0 +1,530 @@
+import json
+import pandas as pd
+from clickhouse_driver import Client
+from clickhouse_driver import connect
+import random, string,logging
+from datetime import datetime, timedelta
+import pytz
+import tzlocal
+
+
+def leads(data,host,port,user,password,database):
+    
+    s = {"use_numpy": True}
+    client = Client(host=host, port=port, user=user, password=password, database=database, settings=s)
+
+    data = data[0]['data']
+    if data["Stage"] == 'Leads':
+        d = {}
+        df=[data]
+        d['Operation'] = df[0]['Stage']
+        d['Leads'] = [df[0]]
+        df = [d]
+
+    elif data["Stage"] !='Leads':
+        d = {}
+        d['Operation'] = data['Stage']
+        d['Leads'] = [data]
+        df = [d]
+#         print(df)
+
+    for i in range(len(df)):
+
+        if df[0]['Operation'] == 'Leads' and len(df[0]["Leads"][0])>5:
+            
+            result = [tuple(row) for row in (client.execute(f"SELECT Lead_Name, Company FROM san_test.leads"))]
+            result = [(item.lower() for item in tpl) for tpl in result]
+            var=df[0]["Leads"][0]
+            Contact_ID1 = client.execute(f"select DISTINCT Contact_ID from contacts where Email_id='{df[0]['Leads'][0]['Email_id'].lower().strip()}'")
+            Email_id = client.execute(f"SELECT DISTINCT Email_id from leads where Company='{df[0]['Leads'][0]['Company']}'")
+            Contact_ID2 = client.execute(f"SELECT DISTINCT c.Contact_ID FROM contacts c INNER JOIN leads l ON c.Contact_ID = l.Contact_ID WHERE c.Email_id = '{var['Email_id'].lower().strip()}' AND l.Company = '{var['Company'].title().strip()}'")
+            for x in result:
+                if (df[0]["Leads"][0]["Lead_Name"].lower() in x and df[0]["Leads"][0]["Company"].lower() in x):
+                    print(f"The given Lead '{df[0]['Leads'][0]['Lead_Name']}' for Company '{df[0]['Leads'][0]['Company']}' already exists in the database.")
+                    kaf_obj.kafka_produce([f"The given Lead Name '{df[0]['Leads'][0]['Lead_Name']}' and Company '{df[0]['Leads'][0]['Company']}' already exists in the database."],"@EVENT.OUTEVENT")
+                    log_obj.info(f"The given Lead Name '{df[0]['Leads'][0]['Lead_Name']}' and Company '{df[0]['Leads'][0]['Company']}' already exists in the database.")
+                    logging.info(f"The given Lead Name '{df[0]['Leads'][0]['Lead_Name']}' and Company '{df[0]['Leads'][0]['Company']}' already exists in the database.")
+                    break
+            else:
+                d1 = {}
+                leads = []
+                d1['Lead_ID'] = 'L' + datetime.now().strftime('%M%S') + (df[0]["Leads"][0]["Company"].split(' ')[0].upper()[:4] + 'A' * (4 - len(df[0]["Leads"][0]["Company"].split(' ')[0].upper()[:4])))
+                d1['Contact_ID'] = Contact_ID1[0][0] if var['Email_id'].lower().strip() in Email_id else Contact_ID2[0][0] if (var['existing_company'] and var['existing_contact'])=='yes' and len(Contact_ID2)>0 else ('C0'+(df[0]["Leads"][0]["Company"].split(' ')[0].upper()[:4] + '0' * (4 - len(df[0]["Leads"][0]["Company"].split(' ')[0].upper()[:4])))+datetime.now().strftime('%M%S%f')[:-4])
+                d1['Lead_Name'] = df[0]["Leads"][0]["Lead_Name"].title().strip()
+                d1['Company'] = df[0]["Leads"][0]["Company"].title().strip()
+                d1['Email_id'] = df[0]["Leads"][0]["Email_id"].lower().strip()
+                d1['Contact_Number'] = df[0]["Leads"][0]["Contact_Number"].strip()
+                d1['Website'] = (df[0]["Leads"][0]["Website"].strip()) if df[0]["Leads"][0]["Website"].strip().startswith('https') else ('https://www.' + df[0]["Leads"][0]["Website"].strip()) if not df[0]["Leads"][0]["Website"].strip().startswith( 'www.') else ('https://' + df[0]["Leads"][0]["Website"].strip()) if df[0]["Leads"][0]["Website"].strip().startswith('www.') else df[0]["Leads"][0]["Website"].strip()
+                d1['Industry'] = df[0]["Leads"][0]["Industry"]
+                d1['Min_Opportunity_Value'] = df[0]["Leads"][0]["Min_Opportunity_Value"]
+                d1['Max_Opportunity_Value'] = df[0]["Leads"][0]["Max_Opportunity_Value"]
+                d1['Rating'] = df[0]["Leads"][0]["Rating"]
+                d1['Source'] = df[0]["Leads"][0]["Source"]
+                d1['Notes'] = df[0]["Leads"][0]["Notes"].replace("'", "''")
+                d1['Created_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d1['Created_By'] = df[0]["Leads"][0]["Created_By"]
+                d1['Stage'] = df[0]["Leads"][0]["Stage"]
+                d1['Last_Modified_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d1['Last_Modified_By'] = df[0]["Leads"][0]["Created_By"]
+                d1['status'] = 'Active'
+                d1['linkedaccount'] = df[0]["Leads"][0]["linkedaccount"]
+                d1['Owner']= df[0]["Leads"][0]["Created_By"]
+
+                leads.append(d1)
+                table1 = 'leads'
+                df_lead = pd.DataFrame(leads)
+                output = client.insert_dataframe(f"INSERT INTO {table1} VALUES", df_lead)
+                
+                d={}
+                d['Lead_ID']=d1['Lead_ID']
+                d['Lead_Name']=d1['Lead_Name']
+                d['Company']=d1['Company']
+                d['Owner']=d1['Owner']
+                d['Created_Date']=d1['Created_Date']
+                d['Created_By']=d1['Created_By']
+                d['Last_Modified_Date']=d1['Last_Modified_Date']
+                d['Last_Modified_By']=d1['Last_Modified_By']
+
+                table3 = 'owner'
+                owner_df = pd.DataFrame([d])
+                output = client.insert_dataframe(f"INSERT INTO {table3} VALUES", owner_df)
+                        
+                        
+                if var['Email_id'].lower().strip() in Email_id:
+                    print("Contact Already exists.")
+                    log_obj.info(f"Lead has been created successfully with Lead ID '{d1['Lead_ID']}' and Contact is already exists for this lead.")
+                    logging.info(f"Lead has been created successfully with Lead ID '{d1['Lead_ID']}' and Contact is already exists for this lead.")
+                    kaf_obj.kafka_produce(f"Lead has been created successfully with Lead ID '{d1['Lead_ID']}' and Contact is already exists for this lead.","@EVENT.OUTEVENT")
+
+                
+                else:
+                    contacts = []
+                    d2 = {}
+                    d2['Contact_ID'] = d1["Contact_ID"]
+                    d2['Contact_Name'] = df[0]["Leads"][0]["Contact_Name"].title().strip()
+                    d2['Title'] = 'NA'
+                    d2['Email_id'] = df[0]["Leads"][0]["Email_id"].lower().strip()
+                    d2['Contact_Number'] = df[0]["Leads"][0]["Contact_Number"].strip()
+                    d2['LinkedIn_Profile'] = 'NA'
+                    d2['Notes'] = 'Contact created successfully'
+                    d2['Created_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                    d2['Created_By'] = df[0]["Leads"][0]["Created_By"]
+                    d2['Last_Modified_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                    d2['Last_Modified_By'] = df[0]["Leads"][0]["Created_By"]
+                    d2['Owner']= df[0]["Leads"][0]["Created_By"]
+                    print(d2)
+                    contacts.append(d2)
+                    table2 = 'contacts'
+                    df_contacts = pd.DataFrame(contacts)
+                    contact_output = client.insert_dataframe(f'INSERT INTO {table2}  VALUES', df_contacts)
+                    kaf_obj.kafka_produce([f"Lead has been created successfully with Lead ID {d1['Lead_ID']} and Contact is successfully created for the lead with Contact ID {d1['Contact_ID']}. "], "@EVENT.OUTEVENT")
+                    logging.info(f"Lead has been created successfully with Lead ID {d1['Lead_ID']} and Contact is successfully created for the lead with Contact ID {d1['Contact_ID']}. ")
+                    log_obj.info(f"Lead has been created successfully with Lead ID {d1['Lead_ID']} and Contact is successfully created for the lead with Contact ID {d1['Contact_ID']}. ")
+
+    
+        elif df[0]['Operation'] == 'Leads' and len(df[0]["Leads"][0])<5:
+            query = f"SELECT * FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'" 
+            leads_df = client.query_dataframe(query)
+            company_name=leads_df['Company'].iloc[i]
+            update_opportunity_table=client.execute(f"ALTER TABLE opportunity DELETE where Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+            number_of_leads_from_same_company=client.execute(f"SELECT COUNT(*) from leads l join customer c ON l.Company=c.Customer_Name Where Stage ='won' and Company ='{company_name}'")[0][0]
+            number_of_opportunities_from_same_company=client.execute(f"SELECT COUNT(*) from leads l join accounts a ON l.Company=a.Account_Name Where (Stage ='qualified' or Stage ='proposal' or Stage ='won' or Stage ='lost') and Company ='{company_name}'")[0][0]
+
+            update_leads_table = client.execute(f"ALTER TABLE leads UPDATE Stage = '{df[0]['Operation']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+
+            if number_of_opportunities_from_same_company==1:
+                update_accounts_table=client.execute(f"ALTER TABLE accounts DELETE where Account_Name='{leads_df['Company'].iloc[i]}'")
+
+            if number_of_leads_from_same_company==1:
+                update_customer_table=client.execute(f"ALTER TABLE customer DELETE where Customer_Name='{leads_df['Company'].iloc[i]}'")
+
+                
+            
+    
+
+        elif df[0]['Operation'] == 'qualified':
+#             stage = str(client.execute(f"SELECT Stage FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")[0][0])
+            query = f"SELECT * FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'" 
+            leads_df = client.query_dataframe(query)
+            account_id = client.execute(f"SELECT a.Account_ID FROM accounts a INNER JOIN leads l ON l.Company = a.Account_Name WHERE l.Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+            opportunity_id=client.execute(f"SELECT Opportunity_ID from opportunity o where o.Lead_ID= '{df[0]['Leads'][0]['Lead_ID']}'")
+#             if stage == 'Leads':
+#             update_leads_table = client.execute(f"ALTER TABLE leads UPDATE Stage = '{df[0]['Operation']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+            opp = []
+            d3 = {}
+            company_name=leads_df['Company'].iloc[i]
+            number_of_leads_from_same_company=client.execute(f"SELECT COUNT(*) from leads l join customer c ON l.Company=c.Customer_Name Where Stage ='won' and Company ='{company_name}'")[0][0]
+            print(number_of_leads_from_same_company)
+            update_leads_table = client.execute(f"ALTER TABLE leads UPDATE Stage = '{df[0]['Operation']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+
+            if len(opportunity_id)>0:
+                update_opportunity=client.execute(f"ALTER TABLE opportunity UPDATE Stage = '{df[0]['Operation']}',Created_Date='{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}' , Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}',Notes='Opportunity created.', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+            if number_of_leads_from_same_company==1:
+                update_customer_table=client.execute(f"ALTER TABLE customer DELETE where Customer_Name='{leads_df['Company'].iloc[i]}'")
+#                 update_accounts_table=client.execute(f"ALTER TABLE accounts DELETE where Account_Name='{leads_df['Company'].iloc[i]}'")
+                
+            if len(opportunity_id)==0:
+                d3['Opportunity_ID'] = 'OP'+(leads_df["Company"].iloc[i].split(' ')[0].upper()[:4] + '0' * (4 - len(leads_df["Company"].iloc[i].split(' ')[0].upper()[:4])))+datetime.now().strftime('%M%f')[:-4]
+                d3['Opportunity_Name'] = leads_df["Lead_Name"].iloc[i]
+                d3['Account_ID'] = account_id[0][0] if len(account_id)>0 else 'AC' + str(datetime.now().strftime('%Y%m%d%H%M%S%f')[:-5])
+                d3['Lead_ID'] = leads_df["Lead_ID"].iloc[i]
+                d3['Value_INR'] = 0
+                d3['Value_In_Base_Currency']=0
+                d3['Base_Currency_Type']=''
+                d3['Stage'] = df[0]["Operation"]
+                d3['Close_Date'] = ''
+                d3['Expected_Closure_Date']=''
+                d3['Notes'] = 'Opportunity created.'
+                d3['Owner'] = leads_df["Owner"].iloc[i]
+                d3['Created_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d3['Created_By'] = leads_df["Created_By"].iloc[i]
+                d3['Last_Modified_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d3['Last_Modified_By'] = leads_df["Last_Modified_By"].iloc[i]
+
+                opp.append(d3)
+                table2 = 'opportunity'
+                df_opp = pd.DataFrame(opp)
+                opp_output = client.insert_dataframe(f'INSERT INTO {table2}  VALUES', df_opp)
+                update_leads=client.execute(f"ALTER TABLE leads UPDATE linkedaccount = '{d3['Account_ID']}' where Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+                kaf_obj.kafka_produce(['opportunity data inserted successfully and leads updated.'], "@EVENT.OUTEVENT")
+
+                accounts = []
+                d4 = {}
+                res = list(client.execute(f"SELECT * FROM accounts WHERE Account_Name = '{leads_df['Company'].iloc[i]}'"))
+                if len(res) != 0:
+                    if (leads_df["Company"].iloc[i] and leads_df['linkedaccount'].iloc[i]) in res[0]:
+                        print(f"Account is already created for {leads_df['Company'].iloc[i]}.")
+                        log_obj.info(f"Account is already created for {leads_df['Company'].iloc[i]}. ")
+                        kaf_obj.kafka_produce([f"Account is already created for {leads_df['Company'].iloc[i]}."])
+                        pass
+                else:
+    #                     address = leads_df["Lead_Name"].iloc[i] + '12th avenue, mumbai ' + str(random.randint(320983, 831003))
+                    d4['Account_ID'] = d3['Account_ID']
+                    d4['Account_Name'] = leads_df['Company'].iloc[i]
+                    d4['Account_Type'] = ''
+                    d4['Contact_Number'] = leads_df['Contact_Number'].iloc[i]
+                    d4['Website'] = leads_df["Website"].iloc[i]
+                    d4['Industry'] = leads_df["Industry"].iloc[i]
+                    d4['Billing_Address'] = ''
+                    d4['Shipping_Address'] = ''
+                    d4['Annual_revenue'] = 0
+                    d4['Total_employees'] = 0
+                    d4['Notes'] = 'Account created'
+                    d4['Created_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                    d4['Created_By'] = leads_df["Created_By"].iloc[i]
+                    d4['Last_Modified_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                    d4['Last_Modified_By'] = leads_df["Last_Modified_By"].iloc[i]
+                    d4['Current_Owner']=leads_df["Owner"].iloc[i]
+                    accounts.append(d4)
+                    table4 = 'accounts'
+                    df_acc = pd.DataFrame(accounts)
+                    accounts_output = client.insert_dataframe(f'INSERT INTO {table4}  VALUES', df_acc)
+                    print(f"lead is successfully converted into an Opportunity with Opportunity ID: {d3['Opportunity_ID']} and Account ID: {d4['Account_ID']}  is successfully created for the lead '{leads_df['Lead_Name'].iloc[i]}'. ")
+                    kaf_obj.kafka_produce([f"lead is successfully converted into an Opportunity with Opportunity ID {d3['Opportunity_ID']} and Account ID {d4['Account_ID']}  is Successfully created for the lead '{leads_df['Lead_Name'].iloc[i]}'. "], "@EVENT.OUTEVENT")
+                    logging.info(f"lead is successfully converted into an Opportunity with Opportunity ID: {d3['Opportunity_ID']} and Account ID: {d4['Account_ID']}  is successfully created for the lead '{leads_df['Lead_Name'].iloc[i]}'. ")
+                    log_obj.info(f"lead is successfully converted into an Opportunity with Opportunity ID: {d3['Opportunity_ID']} and Account ID: {d4['Account_ID']}  is successfully created for the lead '{leads_df['Lead_Name'].iloc[i]}'. ")
+
+                       
+                    
+        elif df[0]['Operation'] == 'proposal':
+#             stage = str(client.execute(f"SELECT Stage FROM san_test.leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")[0][0])
+#             if stage == 'qualified':
+            query = f"SELECT * FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'" 
+            leads_df = client.query_dataframe(query)
+            company_name=leads_df['Company'].iloc[i]
+            number_of_leads_from_same_company=client.execute(f"SELECT COUNT(*) from leads l join customer c ON l.Company=c.Customer_Name Where Stage ='won' and Company ='{company_name}'")[0][0]
+
+            update_leads_stage=client.execute(f"ALTER TABLE leads UPDATE Stage = '{df[0]['Operation']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+            update_opportunity_stage = client.execute(f"ALTER TABLE opportunity UPDATE Stage = '{df[0]['Operation']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}', Notes='Deal is currently in proposal stage.' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+            if number_of_leads_from_same_company==1:
+                update_customer_table=client.execute(f"ALTER TABLE customer DELETE where Customer_Name='{leads_df['Company'].iloc[i]}'")
+
+            log_obj.info(f"Deal is under proposal stage for Lead ID: {df[0]['Leads'][0]['Lead_ID']}. ")
+            logging.info(f"Deal is under proposal stage for Lead ID: {df[0]['Leads'][0]['Lead_ID']}. ")
+            kaf_obj.kafka_produce([f"Deal is under proposal stage for Lead ID: {df[0]['Leads'][0]['Lead_ID']}."], "@EVENT.OUTEVENT")
+#             else:
+#                 log_obj.info(f"The selected Lead_ID: '{df[0]['Leads'][0]['Lead_ID']}' is not in the 'qualified' stage to initiate the proposal.")
+#                 logging.info(f"The selected Lead_ID: '{df[0]['Leads'][0]['Lead_ID']}' is not in the 'qualified' stage to initiate the proposal.")
+#                 kaf_obj.kafka_produce(f"The selected Lead_ID: '{df[0]['Leads'][0]['Lead_ID']}' is not in the 'qualified' stage to initiate the proposal.","@EVENT.OUTEVENT")
+
+
+        elif df[0]['Operation'] == 'won':
+#             stage = str(client.execute(f"SELECT Stage FROM san_test.leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")[0][0])
+            query = f"SELECT * FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'" 
+            leads_df = client.query_dataframe(query)
+#             if stage == 'proposal':
+
+            update_leads_stage = client.execute(f"ALTER TABLE leads UPDATE Stage = '{df[0]['Operation']}',Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+            update_opportunity_stage = client.execute(f"ALTER TABLE opportunity UPDATE Stage = '{df[0]['Operation']}', Close_Date='{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}', Notes = 'Deal won successfully.' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+            query = f"SELECT * FROM accounts WHERE Account_Name = '{leads_df['Company'].iloc[i]}'"
+            accounts_df = client.query_dataframe(query)
+            res = list(client.execute(f"SELECT * FROM customer WHERE Customer_Name = '{leads_df['Company'].iloc[i]}'"))
+            if len(res) != 0:
+                account_id = str(client.execute(f"SELECT Account_ID FROM accounts WHERE Account_Name = '{leads_df['Company'].iloc[i]}'")[0][0])
+                if (leads_df["Company"].iloc[i] and account_id) in res[0]:
+                    print(f"Lead is already converted into customer. ")
+                    logging.info(f"Lead is already converted into customer. ")
+                    log_obj.info(f"Lead is already converted into customer. ")
+                    kaf_obj.kafka_produce([f"Lead is already converted into customer"],"@EVENT.OUTEVENT")
+                    pass
+            else:
+                d5 = {}
+                customer = []
+                d5['Customer_ID'] = 'CUST'+(leads_df["Company"].iloc[i].split(' ')[0].upper()[:4] + '0' * (4 - len(leads_df["Company"].iloc[i].split(' ')[0].upper()[:4])))+datetime.now().strftime('%M%f')[:-5]
+                d5['Customer_Name'] = leads_df["Company"].iloc[i]
+                d5['Account_ID'] = accounts_df['Account_ID'].iloc[i]
+                d5['PAN'] = ''
+                d5['GSTNO'] = ''
+                d5['Other_Info'] = 'customer created.'
+                d5['Notes'] = 'Customer created.'
+                d5['Created_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d5['Created_By'] = leads_df["Created_By"].iloc[i]
+                d5['Last_Modified_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d5['Last_Modified_By'] = leads_df["Last_Modified_By"].iloc[i]
+                d5['Owner']=leads_df["Owner"].iloc[i]
+                customer.append(d5)
+                table5 = 'customer'
+                df_cus = pd.DataFrame(customer)
+                accounts_output = client.insert_dataframe(f'INSERT INTO {table5}  VALUES', df_cus)
+                print(f"Deal has been won successfully and lead Stage has been updated as {df[0]['Operation']} for Lead_ID: {df[0]['Leads'][0]['Lead_ID']} and Customer with Customer ID {d5['Customer_ID']} has been created successfully.")
+                kaf_obj.kafka_produce([f"Deal has been won successfully and lead Stage has been updated as {df[0]['Operation']} for Lead_ID: {df[0]['Leads'][0]['Lead_ID']} and Customer with Customer ID {d5['Customer_ID']} has been created successfully."], "@EVENT.OUTEVENT")
+                logging.info(f"Deal has been won successfully and lead Stage has been updated as {df[0]['Operation']} for Lead_ID: {df[0]['Leads'][0]['Lead_ID']} and Customer with Customer ID {d5['Customer_ID']} has been created successfully.")
+                log_obj.info(f"Deal has been won successfully and lead Stage has been updated as {df[0]['Operation']} for Lead_ID: {df[0]['Leads'][0]['Lead_ID']} and Customer with Customer ID {d5['Customer_ID']} has been created successfully.")
+#             else:
+#                 logging.info(f"The selected lead '{leads_df['Lead_Name'].iloc[i]}' is currently in the '{stage}' stage. It should be in the Proposal stage to Won the deal")
+#                 log_obj.info(f"The selected lead '{leads_df['Lead_Name'].iloc[i]}' is currently in the '{stage}' stage. It should be in the Proposal stage to Won the deal")               
+#                 kaf_obj.kafka_produce([f"The selected lead '{leads_df['Lead_Name'].iloc[i]}' is currently in the '{stage}' stage. It should be in the Proposal stage to Won the deal"],"@EVENT.OUTEVENT")
+
+        elif df[0]['Operation'] == 'lost':
+            stage = str(client.execute(f"SELECT Stage FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")[0][0])
+            if stage != 'won':
+                table1 = 'leads'
+                update_leads_stage = client.execute(f"ALTER TABLE leads UPDATE Stage = '{df[0]['Operation']}',status = 'Inactive', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+                update_opportunity_stage = client.execute(f"ALTER TABLE opportunity UPDATE Stage = '{df[0]['Operation']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}', Notes = 'Deal-lost.' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")
+                kaf_obj.kafka_produce([f"Deal has been lost and lead Stage has been updated as {df[0]['Operation']} for {df[0]['Leads'][0]['Lead_ID']}."], "@EVENT.OUTEVENT")
+                logging.info(f"Deal has been lost and lead Stage has been updated as {df[0]['Operation']} for Lead_ID: {df[0]['Leads'][0]['Lead_ID']}.")
+                log_obj.info(f"Deal has been lost and lead Stage has been updated as {df[0]['Operation']} for Lead_ID: {df[0]['Leads'][0]['Lead_ID']}.")
+
+            else:
+                kaf_obj.kafka_produce([f"The selected lead '{df[0]['Leads'][0]['Lead_ID']}' has already won the deal and converted into a customer."], "@EVENT.OUTEVENT")
+                logging.info(f"The selected lead '{df[0]['Leads'][0]['Lead_ID']}' has already won the deal and converted into a customer.")
+                log_obj.info(f"The selected lead '{df[0]['Leads'][0]['Lead_ID']}' has already won the deal and converted into a customer.")
+                
+                
+        elif df[0]['Operation'] == 'activity':
+            query = f"SELECT * FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'" 
+            leads_df = client.query_dataframe(query)
+            table1 = 'activities'
+            stage = str(client.execute(f"SELECT Stage FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")[0][0])
+            if stage == 'proposal' or stage == 'qualified' or stage=='won':
+                opportunity_list = (client.query_dataframe(f"SELECT * FROM opportunity WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")).to_dict( orient='records')
+                d = {}
+                act = []
+                d['Activity_ID'] = 'A0' + df[0]["Leads"][0]["Lead_ID"][1:4] + datetime.now().strftime('%M%S%f')[:-5]
+                d['Lead_ID'] = df[0]["Leads"][0]["Lead_ID"]
+                d['Opportunity_ID'] = opportunity_list[0]['Opportunity_ID']
+                d['Activity_Type'] = df[0]["Leads"][0]["Activity_Type"]
+                d['Activity_Date'] = pytz.utc.localize(datetime.strptime(df[0]["Leads"][0]["Activity_Date"], '%Y-%m-%d')).astimezone(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d')
+                d['Description'] = df[0]["Leads"][0]["Description"].replace("'", "''")
+                d['Notes'] = df[0]["Leads"][0]["Notes"].replace("'", "''")
+                d['Created_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d['Created_By'] = df[0]["Leads"][0]["Created_By"]
+                d['Last_Modified_Date'] = datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d['Last_Modified_By'] = df[0]["Leads"][0]["Created_By"]
+                d['Owner']= leads_df["Owner"].iloc[i]
+                d['Duration']=df[0]["Leads"][0]["Duration"]
+                act.append(d)
+                activities_df = pd.DataFrame(act)
+                output = client.insert_dataframe(f"INSERT INTO {table1} VALUES", activities_df)
+                logging.info(f"Activity has been logged successfully for Lead_ID: {d['Lead_ID']} with Activity ID {d['Activity_ID']}.")
+                kaf_obj.kafka_produce(f"Activity has been logged successfully for Lead_ID: {d['Lead_ID']} with Activity ID {d['Activity_ID']}.", "@EVENT.OUTEVENT")
+                log_obj.info(f"Activity has been logged successfully for Lead_ID: {d['Lead_ID']} with Activity ID {d['Activity_ID']}.")
+            else:
+                logging.info(f"The selected lead '{leads_df['Lead_Name'].iloc[i]}' status is not in the proposal stage to initiate the activity.")
+                log_obj.info(f"The selected lead '{leads_df['Lead_Name'].iloc[i]}' status is not in the proposal stage to initiate the activity.")
+                kaf_obj.kafka_produce(f"The selected lead '{leads_df['Lead_Name'].iloc[i]}' status is not in the proposal stage to initiate the activity.","@EVENT.OUTEVENT")
+                
+        elif df[0]['Operation'] == 'cases':
+            table1='cases'
+            stage=str(client.execute(f"SELECT Stage FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")[0][0])
+            query = f"SELECT * FROM san_test.leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'" 
+            leads_df = client.query_dataframe(query)
+            if stage=='won':
+                case=[]
+                customer_data= (client.execute(f"SELECT Customer_ID, Customer_Name FROM customer WHERE Account_ID IN (SELECT Account_ID FROM opportunity WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}')")[0])
+                d={}
+                d['Case_ID']='CS-'+customer_data[1][:3].upper()+datetime.now().strftime('%Y%m%d%f')[2:10]
+                d['Customer_ID']=customer_data[0]
+                d['Case_Name']=df[0]["Leads"][0]["Case_Name"].replace("'", "''")
+                d['Case_Date']=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                d['Description']=df[0]["Leads"][0]["Description"].replace("'", "''")
+                d['status']=df[0]["Leads"][0]["status"]
+                d['Ticketing_System']='JIRA'
+                d['Ticket_Identifier']='TKT'+datetime.now().strftime('%Y%m%f')[2:9]
+                d['RCA']='NA'
+                d['Resolution']='NA'
+                d['Notes']=df[0]["Leads"][0]["Notes"].replace("'", "''")
+                d['Created_Date']=datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d['Created_By']=df[0]["Leads"][0]["Created_By"]
+                d['Last_Modified_Date']=datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+                d['Last_Modified_By']=df[0]["Leads"][0]["Created_By"]
+                d['Owner']=leads_df["Owner"].iloc[i]
+                case.append(d)
+                cases_df=pd.DataFrame(case)
+                output = client.insert_dataframe(f"INSERT INTO {table1} VALUES", cases_df)
+                logging.info(f"Case has been logged for Customer '{customer_data[1]}' with Ticket_ID: {d['Ticket_Identifier']}, Case Name:'{d['Case_Name']}'.")
+                kaf_obj.kafka_produce(f"Case has been logged for Customer '{customer_data[1]}' with Ticket_ID: {d['Ticket_Identifier']}, Case Name:'{d['Case_Name']}'. ", "@EVENT.OUTEVENT")
+                log_obj.info(f"Case has been logged for Customer '{customer_data[1]}' with Ticket_ID: {d['Ticket_Identifier']}, Case Name:'{d['Case_Name']}'.")
+            
+            else:
+                logging.info("The selected lead has not become the customer to initiate the case")
+                log_obj.info("The selected lead has not become the customer to initiate the case")
+                kaf_obj.kafka_produce("The selected lead has not become the customer to initiate the case","@EVENT.OUTEVENT")
+        
+        elif df[0]['Operation'] == 'update_case':
+            update_cases=client.execute(f'''ALTER TABLE cases UPDATE status = '{df[0]['Leads'][0]['Status']}', 
+Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', 
+Last_Modified_By='{df[0]['Leads'][0]['Created_By']}', RCA='{df[0]['Leads'][0]['RCA'].replace("'", "''")}', 
+Resolution='{df[0]['Leads'][0]['Resolution'].replace("'", "''")}' WHERE Case_ID='{df[0]['Leads'][0]['Case_ID']}' ''')
+            logging.info(f"The case status has been updated as '{df[0]['Leads'][0]['Status']}' for Case_ID: '{df[0]['Leads'][0]['Case_ID']}'.")
+            log_obj.info(f"The case status has been updated as '{df[0]['Leads'][0]['Status']}' for Case_ID: '{df[0]['Leads'][0]['Case_ID']}'.")
+            kaf_obj.kafka_produce(f"The case status has been updated as '{df[0]['Leads'][0]['Status']}' for Case_ID: '{df[0]['Leads'][0]['Case_ID']}'.","@EVENT.OUTEVENT")
+
+        elif df[0]['Operation'] == 'update_activity':
+            update_activities = client.execute(f'''ALTER TABLE activities 
+    UPDATE Activity_Type = '{df[0]['Leads'][0]['Activity_Type']}',
+    Description = '{df[0]['Leads'][0]['Description'].replace("'", "''")}',
+    Duration = '{df[0]['Leads'][0]['Duration']}',
+    Activity_Date = '{pytz.utc.localize(datetime.strptime(df[0]['Leads'][0]['Activity_Date'], '%Y-%m-%d')).astimezone(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d')}',
+    Last_Modified_Date = '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}',
+    Last_Modified_By = '{df[0]['Leads'][0]['Created_By']}'
+    WHERE Activity_ID = '{df[0]['Leads'][0]['Activity_ID']}' ''')
+
+            logging.info(f"The activity has been updated for Activity_ID: '{df[0]['Leads'][0]['Activity_ID']}'.")
+            log_obj.info(f"The activity has been updated for Activity_ID: '{df[0]['Leads'][0]['Activity_ID']}'.")
+            kaf_obj.kafka_produce(f"The activity has been updated for Activity_ID: '{df[0]['Leads'][0]['Activity_ID']}'.","@EVENT.OUTEVENT")
+    
+        elif df[0]['Operation'] == 'capture_customer':
+            update_customer=client.execute(f"ALTER TABLE customer UPDATE PAN='{df[0]['Leads'][0]['PAN'].upper()}', GSTNO='{df[0]['Leads'][0]['GSTIN'].upper()}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}', Other_Info='customer details captured' where Customer_ID= '{df[0]['Leads'][0]['Customer_ID']}' and Account_ID= '{df[0]['Leads'][0]['Account_id']}'")
+            update_accounts= client.execute(f"ALTER TABLE accounts UPDATE Account_Type='{df[0]['Leads'][0]['Account_type']}', Billing_Address='{df[0]['Leads'][0]['Billing_address']}', Shipping_Address='{df[0]['Leads'][0]['Shipping_address']}', Annual_revenue='{df[0]['Leads'][0]['Revenue']}', Total_employees='{df[0]['Leads'][0]['Total_emp']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' where Account_ID= '{df[0]['Leads'][0]['Account_id']}' and Account_Name='{df[0]['Leads'][0]['Customername']}'")
+            print(f"The details has been captured for customer '{df[0]['Leads'][0]['Customername']}' and account details has been updated for the same.")
+            logging.info(f"The details has been captured for customer '{df[0]['Leads'][0]['Customername']}' and account details has been updated for the same.")
+            log_obj.info(f"The details has been captured for customer '{df[0]['Leads'][0]['Customername']}' and account details has been updated for the same.")
+            kaf_obj.kafka_produce(f"The details has been captured for customer '{df[0]['Leads'][0]['Customername']}' and account details has been updated for the same.","@EVENT.OUTEVENT")
+            
+        elif df[0]['Operation'] == 'update_opportunity':
+            if df[0]['Leads'][0]['Expected_Closure_Date']:
+                # Convert and format the date
+                expected_closure_date = pytz.utc.localize(datetime.strptime(df[0]['Leads'][0]['Expected_Closure_Date'], '%Y-%m-%d')).astimezone(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d')
+            else:
+                # Set it as an empty string
+                expected_closure_date = ''
+            update_opportunity= client.execute(f"ALTER TABLE opportunity UPDATE Value_INR='{df[0]['Leads'][0]['Deal_value_INR']}', Value_In_Base_Currency='{df[0]['Leads'][0]['Deal_value_Base_Currency']}', Base_Currency_Type='{df[0]['Leads'][0]['Base_Currency_Type']}', Expected_Closure_Date='{expected_closure_date}' , Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' where Opportunity_ID='{df[0]['Leads'][0]['Opportunity_id']}' and Opportunity_Name='{df[0]['Leads'][0]['Opportunity_name']}'")            
+            print(f"The opportunity value has been updated for '{df[0]['Leads'][0]['Opportunity_name']}'.")
+            logging.info(f"The opportunity value has been updated for '{df[0]['Leads'][0]['Opportunity_name']}'.")
+            log_obj.info(f"The opportunity value has been updated for '{df[0]['Leads'][0]['Opportunity_name']}'.")
+            kaf_obj.kafka_produce(f"The opportunity value has been updated for '{df[0]['Leads'][0]['Opportunity_name']}'.","@EVENT.OUTEVENT")
+        
+        elif df[0]['Operation'] == 'transfer_ownership':
+            result =client.query_dataframe(f"SELECT * FROM owner where Lead_ID='{df[0]['Leads'][0]['Lead_ID']}'")            
+            d={}
+            d['Lead_ID']=df[0]['Leads'][0]['Lead_ID']
+            d['Lead_Name']=result['Lead_Name'].iloc[i]
+            d['Company']=result['Company'].iloc[i]
+            d['Owner']=df[0]['Leads'][0]['Owner']
+            d['Created_Date']=datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+            d['Created_By']=df[0]["Leads"][0]["Created_By"]
+            d['Last_Modified_Date']=datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')
+            d['Last_Modified_By']=df[0]["Leads"][0]["Created_By"]
+            print(d)
+            table1 = 'owner'
+            owner_df = pd.DataFrame([d])
+            output = client.insert_dataframe(f"INSERT INTO {table1} VALUES", owner_df)
+
+            created_date=client.query_dataframe(f"select Created_Date from owner where Lead_ID='{df[0]['Leads'][0]['Lead_ID']}' order by Created_Date")
+
+            update_leads_table=client.execute(f"ALTER TABLE leads UPDATE Owner = '{df[0]['Leads'][0]['Owner']}', Last_Modified_Date = '{d['Last_Modified_Date']}', Last_Modified_By = '{d['Last_Modified_By']}' WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")
+            update_owner_table=client.execute(f"ALTER TABLE owner UPDATE Last_Modified_Date = '{d['Last_Modified_Date']}' where Lead_ID='{df[0]['Leads'][0]['Lead_ID']}' and Owner='{df[0]['Leads'][0]['Old_owner']}' and Created_Date='{created_date.iloc[len(created_date)-2:len(created_date)-1].values[0][0]}'")
+
+            log_obj.info(f"Ownership for Lead '{d['Lead_Name']}' has been transferred to '{df[0]['Leads'][0]['Owner']}'.")
+            logging.info(f"Ownership for Lead '{d['Lead_Name']}' has been transferred to '{df[0]['Leads'][0]['Owner']}'.")
+            kaf_obj.kafka_produce(f"Ownership for Lead '{d['Lead_Name']}' has been transferred to '{df[0]['Leads'][0]['Owner']}'.","@EVENT.OUTEVENT")
+            
+            
+            update_opportunity_table=client.execute(f"ALTER TABLE opportunity UPDATE Owner = '{df[0]['Leads'][0]['Owner']}', Last_Modified_Date = '{d['Last_Modified_Date']}', Last_Modified_By = '{d['Last_Modified_By']}' WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")
+            account_name=client.execute(f"SELECT a.Account_Name FROM accounts a INNER JOIN leads l ON a.Account_Name = l.Company WHERE Lead_ID ='{df[0]['Leads'][0]['Lead_ID']}'");
+            if len(account_name)!=0:
+                update_accounts_table=client.execute(f"ALTER TABLE accounts UPDATE Current_Owner = '{df[0]['Leads'][0]['Owner']}', Last_Modified_Date = '{d['Last_Modified_Date']}', Last_Modified_By = '{d['Last_Modified_By']}' WHERE Account_Name = '{account_name[0][0]}'")
+            else:
+                pass
+            customer_name=client.execute(f"SELECT c.Customer_Name FROM customer c INNER JOIN leads l ON c.Customer_Name = l.Company WHERE Lead_ID ='{df[0]['Leads'][0]['Lead_ID']}'")
+            if len(customer_name)!=0:
+                update_customer_table=client.execute(f"ALTER TABLE customer UPDATE Owner = '{df[0]['Leads'][0]['Owner']}', Last_Modified_Date = '{d['Last_Modified_Date']}', Last_Modified_By = '{d['Last_Modified_By']}' WHERE Customer_Name = '{customer_name[0][0]}'")
+            else:
+                pass
+            update_activities_table=client.execute(f"ALTER TABLE activities UPDATE Owner = '{df[0]['Leads'][0]['Owner']}', Last_Modified_Date = '{d['Last_Modified_Date']}', Last_Modified_By = '{d['Last_Modified_By']}' WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")
+            customer_ID=client.execute(f"SELECT DISTINCT  c.Customer_ID as Customer_ID FROM opportunity o JOIN customer cu ON o.Account_ID = cu.Account_ID JOIN cases c ON cu.Customer_ID = c.Customer_ID WHERE o.Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'");
+            if len(customer_ID)!=0:
+                update_cases_table=client.execute(f"ALTER TABLE cases UPDATE Owner = '{df[0]['Leads'][0]['Owner']}', Last_Modified_Date = '{d['Last_Modified_Date']}', Last_Modified_By = '{d['Last_Modified_By']}' WHERE Customer_ID = '{customer_ID[0][0]}'")
+            else:
+                pass
+            
+        elif df[0]['Operation'] == 'delete_lead':
+            Lead_Name = str(client.execute(f"SELECT Lead_Name FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")[0][0])
+            distinct_lead_per_contact_id=client.execute(f"SELECT DISTINCT Lead_Name FROM leads WHERE Contact_ID IN (SELECT Contact_ID FROM san_test.leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}');")
+
+            if len(distinct_lead_per_contact_id) == 1:
+                update_contacts_table = client.execute(f"ALTER TABLE contacts DELETE WHERE Contact_ID IN (SELECT Contact_ID FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}')")               
+                update_leads_table=client.execute(f"ALTER table leads DELETE where Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")
+                update_owner_table=client.execute(f"ALTER table owner DELETE where Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")
+                print(f"The lead '{Lead_Name}' has been deleted successfully.")
+                log_obj.info(f"The lead '{Lead_Name}' has been deleted successfully.")
+                logging.info(f"The lead '{Lead_Name}' has been deleted successfully.")
+                kaf_obj.kafka_produce(f"The lead '{Lead_Name}' has been deleted successfully.","@EVENT.OUTEVENT")
+                
+            elif len(distinct_lead_per_contact_id) > 1:
+                update_leads_table=client.execute(f"ALTER table leads DELETE where Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")
+                update_owner_table=client.execute(f"ALTER table owner DELETE where Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")
+                print(f"The lead '{Lead_Name}' has been deleted successfully.")
+                log_obj.info(f"The lead '{Lead_Name}' has been deleted successfully.")
+                logging.info(f"The lead '{Lead_Name}' has been deleted successfully.")
+                kaf_obj.kafka_produce(f"The lead '{Lead_Name}' has been deleted successfully.","@EVENT.OUTEVENT")
+
+        elif df[0]['Operation'] == 'update_lead':
+          
+            update_leads_table=client.execute(f'''ALTER table leads UPDATE Lead_Name='{df[0]['Leads'][0]['Lead_Name']}', Source='{df[0]['Leads'][0]['Source']}', Email_id='{df[0]['Leads'][0]['Email_id']}', 
+            Website='{df[0]['Leads'][0]['Website']}', Min_Opportunity_Value='{df[0]['Leads'][0]['Min_Opportunity_Value']}', Max_Opportunity_Value='{df[0]['Leads'][0]['Max_Opportunity_Value']}', Rating='{df[0]['Leads'][0]['Rating']}',
+            Notes='{df[0]['Leads'][0]['Notes'].replace("'", "''")}', Industry='{df[0]['Leads'][0]['Industry']}', Contact_Number='{df[0]['Leads'][0]['Contact_Number']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', 
+            Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}' ''')
+
+            update_contacts_table=client.execute(f"ALTER table contacts UPDATE Email_id='{df[0]['Leads'][0]['Email_id']}', Contact_Number='{df[0]['Leads'][0]['Contact_Number']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Contact_ID IN (select Contact_ID from leads where Lead_ID='{df[0]['Leads'][0]['Lead_ID']}')")                
+            update_owner_table= client.execute(f'''ALTER table owner UPDATE Lead_Name='{df[0]['Leads'][0]['Lead_Name']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', 
+            Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}' ''')
+
+
+            update_opportunity_table=client.execute(f'''ALTER table opportunity UPDATE Opportunity_Name='{df[0]['Leads'][0]['Lead_Name']}', Value= '{(int(df[0]['Leads'][0]['Min_Opportunity_Value'])+int(df[0]['Leads'][0]['Max_Opportunity_Value']))//2}',
+            Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}' ''')
+
+            update_accounts_table= client.execute(f'''ALTER table accounts UPDATE Industry='{df[0]['Leads'][0]['Industry']}', 
+            Contact_Number='{df[0]['Leads'][0]['Contact_Number']}', Website='{df[0]['Leads'][0]['Website']}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', 
+            Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Account_Name='{df[0]['Leads'][0]['Company']}' ''')
+
+            print(f"The details for the lead '{df[0]['Leads'][0]['Lead_Name']}' has been updated successfully.")
+
+        elif df[0]['Operation'] == 'lost_reason':
+            query = f"SELECT * FROM leads WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'" 
+            leads_df = client.query_dataframe(query)
+            leads_df.loc[0, 'Notes'] +=' Reason for lost: '+df[0]['Leads'][0]['Notes'] if ' Reason for lost: ' not in leads_df.loc[0, 'Notes'] else ' '+df[0]['Leads'][0]['Notes']
+            update_leads_table=client.execute(f'''ALTER table leads UPDATE Notes='{leads_df.loc[0, 'Notes'].replace("'", "''")}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', 
+            Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}' ''')            
+            opportunity_df=client.query_dataframe(f"SELECT * FROM opportunity WHERE Lead_ID = '{df[0]['Leads'][0]['Lead_ID']}'")
+            if len(opportunity_df)==1:
+                opportunity_df.loc[0, 'Notes'] +=' Reason for lost: '+df[0]['Leads'][0]['Notes'] if ' Reason for lost: ' not in opportunity_df.loc[0, 'Notes'] else ' '+df[0]['Leads'][0]['Notes']
+                update_opportunity_table=client.execute(f'''ALTER table opportunity UPDATE Notes='{opportunity_df.loc[0, 'Notes'].replace("'", "''")}', Last_Modified_Date= '{datetime.now(pytz.utc).strftime('%Y-%m-%d %H:%M:%S')}', 
+                Last_Modified_By='{df[0]['Leads'][0]['Created_By']}' WHERE Lead_ID='{df[0]['Leads'][0]['Lead_ID']}' ''')
+            else:
+                pass
+            print(f"The reason for losing the deal has been updated for lead '{df[0]['Leads'][0]['Lead_Name']}'.")
+            log_obj.info(f"The reason for losing the deal has been updated for lead '{df[0]['Leads'][0]['Lead_Name']}'.")
+            kaf_obj.kafka_produce([f"The reason for losing the deal has been updated for lead '{df[0]['Leads'][0]['Lead_Name']}'."],"@EVENT.OUTEVENT")
+            logging.info(f"The reason for losing the deal has been updated for lead '{df[0]['Leads'][0]['Lead_Name']}'.")
